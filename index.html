@@ -89,6 +89,8 @@
 /* ===== INNSTILLINGER ===== */
 // Varsler sendes via ntfy.sh. Installer appen «ntfy» på mobilen din og abonner på dette emnet:
 const NTFY_TOPIC = "ukens-oppdrag-24a87790ff";
+// Status brukes av den daglige påminnelsen (GitHub Actions) for å se hva som er gjort i dag:
+const STATUS_TOPIC = NTFY_TOPIC + "-status";
 /* ========================= */
 
 const DAYS=["Mandag","Tirsdag","Onsdag","Torsdag","Fredag","Lørdag","Søndag"];
@@ -150,6 +152,7 @@ document.getElementById("list").addEventListener("click",async e=>{
   if(sel!==TODAY){toast("Du kan bare krysse av for i dag");return}
   const i=+b.dataset.t, on=!data[sel][i];
   data[sel][i]=on;store.set("oppdrag-"+WEEK,data);render();
+  fetch("https://ntfy.sh/",{method:"POST",body:JSON.stringify({topic:STATUS_TOPIC,message:JSON.stringify({date:new Date().toLocaleDateString("sv-SE"),done:data[sel].map((v,k)=>v?k:-1).filter(k=>k>=0)})})}).catch(()=>{});
   const who=name||"Sønnen din", day=DAYS[sel].toLowerCase();
   if(on){
     const allDone=data[sel].every(Boolean);
