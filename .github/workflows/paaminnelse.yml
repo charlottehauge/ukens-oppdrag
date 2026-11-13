@@ -1,0 +1,82 @@
+name: Daglig påminnelse kl. 14.30
+
+on:
+  schedule:
+    - cron: "30 12 * * *"   # 14:30 norsk sommertid
+    - cron: "30 13 * * *"   # 14:30 norsk vintertid
+  workflow_dispatch:
+    inputs:
+      test:
+        description: "Send påminnelse nå (ignorer klokkeslett og uke)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Send påminnelse
+        env:
+          TEST: ${{ inputs.test }}
+          CRON: ${{ github.event.schedule }}
+        run: |
+          cat > remind.mjs <<'EOF'
+          const STATUS = "ukens-oppdrag-24a87790ff-status";       // det siden melder inn
+          const SON    = "oppdrag-paaminnelse-d791dfc613";          // sønnens ntfy-emne
+          const PAGE   = "https://charlottehauge.github.io/ukens-oppdrag/";
+          const TASKS = [["Rydde rom",10],["Lage middag",20],["Gå ut med søpla",5],["Støvsuge stue/kjøkken",15],["Støvsuge trapp, gang og bad",15],["Full shine soverom",50],["Ta inn/ut av oppvaskmaskin",10],["Henge opp/ta ned tøy",10],["Gå over og rydde kjøkkenbenken",10]];
+
+          const test = process.env.TEST === "true";
+          const now = new Date();
+          const p = Object.fromEntries(new Intl.DateTimeFormat("en-GB",{timeZone:"Europe/Oslo",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",hourCycle:"h23"}).formatToParts(now).map(x=>[x.type,x.value]));
+          const today = `${p.year}-${p.month}-${p.day}`;
+          const offset = ((+p.hour - now.getUTCHours()) + 24) % 24;          // 1 = vintertid, 2 = sommertid
+          const wanted = offset === 2 ? "30 12 * * *" : "30 13 * * *";
+          const t = new Date(Date.UTC(+p.year, +p.month-1, +p.day)); const n = t.getUTCDay()||7; t.setUTCDate(t.getUTCDate()+4-n);
+          const week = Math.ceil(((t - new Date(Date.UTC(t.getUTCFullYear(),0,1)))/864e5+1)/7);
+          console.log({today, week, offset, cron: process.env.CRON, wanted, test});
+
+          if (!test) {
+            if (process.env.CRON !== wanted) { console.log("Feil cron for årstiden – hopper over."); process.exit(0); }
+            if (week % 2 === 0) { console.log("Partallsuke – ingen påminnelse."); process.exit(0); }
+          }
+
+          let done = [];
+          try {
+            const txt = await fetch(`https://ntfy.sh/${STATUS}/json?poll=1&since=24h`).then(r=>r.text());
+            for (const line of txt.split("\n")) {
+              if (!line.trim()) continue;
+              const m = JSON.parse(line); if (m.event !== "message") continue;
+              try { const s = JSON.parse(m.message); if (s.date === today) done = s.done || []; } catch {}
+            }
+          } catch (e) { console.log("Fikk ikke hentet status:", e.message); }
+
+          const missing = TASKS.map((t,i)=>[...t,i]).filter(t=>!done.includes(t[2]));
+          console.log({done, missing: missing.map(m=>m[0])});
+          if (!missing.length) { console.log("Alt er gjort i dag – ingen påminnelse."); process.exit(0); }
+
+          const sum = missing.reduce((a,m)=>a+m[1],0);
+          const body = {
+            topic: SON,
+            title: `⏰ Du har ${missing.length} oppdrag igjen i dag`,
+            message: missing.map(m=>`• ${m[0]} (${m[1]},-)`).join("\n") + `\n\nDu kan fortsatt tjene ${sum},- i dag! Trykk her for å krysse av.`,
+            tags: ["alarm_clock"], priority: 4, click: PAGE
+          };
+          const r = await fetch("https://ntfy.sh/", {method:"POST", body: JSON.stringify(body)});
+          console.log("Sendt:", r.status);
+          EOF
+          node remind.mjs
+
+      - name: Hold planen aktiv (GitHub slår av planlagte jobber etter 60 dager uten aktivitet)
+        if: github.event_name == 'schedule'
+        run: |
+          if [ "$(TZ=Europe/Oslo date +%d)" = "01" ]; then
+            git config user.name "paaminnelse-bot"
+            git config user.email "actions@users.noreply.github.com"
+            git commit --allow-empty -m "Hold påminnelsen aktiv"
+            git push
+          fi
